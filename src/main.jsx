@@ -1,26 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import {
-  BookOpen,
-  Brain,
-  Download,
-  FileText,
-  Gauge,
-  Loader2,
-  Mic,
-  Pause,
-  Play,
-  Sparkles,
-  Upload,
-  Video,
-  Wand2,
-  Shuffle,
-  X,
-  Settings,
-  Save,
-  KeyRound,
-  CheckCircle2
-} from "lucide-react";
 import * as pdfjs from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 import "./styles.css";
@@ -36,23 +15,19 @@ The best reading aid is not just more stimulation. It is stimulation that has a 
 const MODES = {
   focus: {
     label: "Focus Scroll",
-    description: "Large kinetic captions with a calm progress rail.",
-    icon: BookOpen
+    description: "Large kinetic captions with a calm progress rail."
   },
   parkour: {
     label: "Parkour Captions",
-    description: "VidGen-style energetic background motion with bold captions.",
-    icon: Gauge
+    description: "VidGen-style energetic background motion with bold captions."
   },
   summary: {
     label: "Study Summary",
-    description: "Turns long material into short memorable chapter cards.",
-    icon: Brain
+    description: "Turns long material into short memorable chapter cards."
   },
   quiz: {
     label: "Recall Beats",
-    description: "Alternates key points with quick self-check prompts.",
-    icon: Sparkles
+    description: "Alternates key points with quick self-check prompts."
   }
 };
 
@@ -432,13 +407,13 @@ function App() {
   const [clipLibrary, setClipLibrary] = useState([]);
   const [isDownloadingClip, setIsDownloadingClip] = useState(false);
   const [clipOffset, setClipOffset] = useState(0);
-  const [apiSectionOpen, setApiSectionOpen] = useState(false);
   const [apiProvider, setApiProvider] = useState("gemini");
   const [apiModel, setApiModel] = useState(AI_PROVIDERS.gemini.model);
   const [aiApiKey, setAiApiKey] = useState("");
   const [deepgramApiKey, setDeepgramApiKey] = useState("");
   const [voiceModel, setVoiceModel] = useState("aura-asteria-en");
   const [apiSaved, setApiSaved] = useState(false);
+  const [outputOpen, setOutputOpen] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [apiMessage, setApiMessage] = useState("");
@@ -491,6 +466,10 @@ function App() {
 
   useEffect(() => () => {
     if (videoUrl.startsWith("blob:")) URL.revokeObjectURL(videoUrl);
+  }, [videoUrl]);
+
+  useEffect(() => {
+    if (videoUrl) setOutputOpen(true);
   }, [videoUrl]);
 
   const scenes = useMemo(
@@ -588,7 +567,7 @@ function App() {
       renderWords = preparedVoice.words;
     }
     if (!renderVoiceUrl && !renderWords.length) {
-      setApiMessage("Generate a Deepgram voice before rendering the video.");
+      setApiMessage("Add a Deepgram key in Settings and preview voice before rendering.");
       setIsRendering(false);
       return;
     }
@@ -717,8 +696,7 @@ function App() {
 
   const generateScript = async () => {
     if (!aiApiKey || !sourceText.trim()) {
-      setApiSectionOpen(true);
-      setApiMessage("Add input and an AI API key first");
+      setApiMessage("Add input and an AI API key in Settings first.");
       return;
     }
     setIsGenerating(true);
@@ -831,120 +809,89 @@ function App() {
 
   return (
     <main className="app-shell">
-      <section className="topbar" aria-label="App summary">
-        <div>
-          <p className="eyebrow">FocusVid Reader</p>
-          <h1>Read better. Finish more.</h1>
-        </div>
-        <div className="stats">
-          <span>{wordCount} words</span>
-          <span>{scenes.length} scenes</span>
-          <span>{Math.ceil(totalSeconds)} sec</span>
-        </div>
-      </section>
-
       <section className="workspace">
         <aside className="controls">
-          <section className="api-section">
-            <button type="button" className="api-section-header" onClick={() => setApiSectionOpen((open) => !open)}>
-              <span><Settings size={18} /> API setup</span>
-              <span className="api-state">{apiSaved ? <CheckCircle2 size={16} /> : ""}{apiSectionOpen ? "Hide" : "Show"}</span>
-            </button>
-            {apiSectionOpen && (
-              <div className="api-fields">
-                <label>
-                  <span>AI provider</span>
-                  <select value={apiProvider} onChange={(event) => chooseProvider(event.target.value)}>
-                    {Object.entries(AI_PROVIDERS).map(([value, item]) => <option key={value} value={value}>{item.label}</option>)}
-                  </select>
-                </label>
-                <label>
-                  <span>AI model</span>
-                  <input value={apiModel} onChange={(event) => setApiModel(event.target.value)} />
-                </label>
-                <label>
-                  <span><KeyRound size={14} /> {AI_PROVIDERS[apiProvider].label} API key</span>
-                  <input type="password" value={aiApiKey} onChange={(event) => setAiApiKey(event.target.value)} placeholder="Paste provider key" autoComplete="off" />
-                </label>
-                <label>
-                  <span><Mic size={14} /> Deepgram API key</span>
-                  <input type="password" value={deepgramApiKey} onChange={(event) => setDeepgramApiKey(event.target.value)} placeholder="Paste Deepgram key" autoComplete="off" />
-                </label>
-                <label>
-                  <span>Voice model</span>
-                  <select value={voiceModel} onChange={(event) => setVoiceModel(event.target.value)}>
-                    {VOICE_MODELS.map((model) => <option key={model} value={model}>{model}</option>)}
-                  </select>
-                </label>
-                <button type="button" className="save-api" onClick={saveApiSettings}><Save size={16} /> Save API settings</button>
-                <p className="api-note">Keys stay in this browser&apos;s local storage and are sent only to the local API server when you generate.</p>
-                {apiMessage && <p className="api-note api-message">{apiMessage}</p>}
-              </div>
-            )}
-          </section>
-
           <label className="file-drop">
-            <Upload size={20} />
             <span>{isExtracting ? "Reading file..." : "Upload PDF or text"}</span>
             <input type="file" accept=".pdf,.txt,.md,text/plain,application/pdf" onChange={handleFile} />
           </label>
 
           <label>
-            <span>Project title</span>
+            <span>Title</span>
             <input value={title} onChange={(event) => setTitle(event.target.value)} />
           </label>
 
-          <label>
-            <span>Input type</span>
-            <select value={inputType} onChange={(event) => setInputType(event.target.value)}>
-              <option value="material">Study material</option>
-              <option value="idea">Idea</option>
-            </select>
-          </label>
+          <div className="split-row">
+            <label>
+              <span>Input</span>
+              <select value={inputType} onChange={(event) => setInputType(event.target.value)}>
+                <option value="material">Study material</option>
+                <option value="idea">Idea</option>
+              </select>
+            </label>
+
+            <label>
+              <span>Theme</span>
+              <select value={theme} onChange={(event) => setTheme(event.target.value)}>
+                <option value="Facts">Facts</option>
+                <option value="Horror">Horror</option>
+              </select>
+            </label>
+          </div>
 
           <label>
             <span>{inputType === "idea" ? "Video idea" : "Study material"}</span>
             <textarea value={sourceText} onChange={(event) => setSourceText(event.target.value)} />
           </label>
 
-          <div className="mode-grid" role="radiogroup" aria-label="Video mode">
-            {Object.entries(MODES).map(([key, item]) => {
-              const Icon = item.icon;
-              return (
-                <button
-                  className={mode === key ? "mode active" : "mode"}
-                  key={key}
-                  onClick={() => setMode(key)}
-                  type="button"
-                  title={item.description}
-                >
-                  <Icon size={18} />
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-          </div>
-
           <label>
-            <span>Script theme</span>
-            <select value={theme} onChange={(event) => setTheme(event.target.value)}>
-              <option value="Facts">Facts</option>
-              <option value="Horror">Horror</option>
+            <span>Mode</span>
+            <select value={mode} onChange={(event) => setMode(event.target.value)} title={MODES[mode].description}>
+              {Object.entries(MODES).map(([key, item]) => (
+                <option key={key} value={key}>{item.label}</option>
+              ))}
             </select>
           </label>
 
-          <details className="advanced-options">
-            <summary>More options</summary>
+          <details className="settings-section">
+            <summary>Settings {apiSaved ? "saved" : ""}</summary>
+            <div className="api-fields">
+              <label>
+                <span>AI provider</span>
+                <select value={apiProvider} onChange={(event) => chooseProvider(event.target.value)}>
+                  {Object.entries(AI_PROVIDERS).map(([value, item]) => <option key={value} value={value}>{item.label}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>AI model</span>
+                <input value={apiModel} onChange={(event) => setApiModel(event.target.value)} />
+              </label>
+              <label>
+                <span>{AI_PROVIDERS[apiProvider].label} API key</span>
+                <input type="password" value={aiApiKey} onChange={(event) => setAiApiKey(event.target.value)} placeholder="Paste provider key" autoComplete="off" />
+              </label>
+              <label>
+                <span>Deepgram API key</span>
+                <input type="password" value={deepgramApiKey} onChange={(event) => setDeepgramApiKey(event.target.value)} placeholder="Paste Deepgram key" autoComplete="off" />
+              </label>
+              <label>
+                <span>Voice model</span>
+                <select value={voiceModel} onChange={(event) => setVoiceModel(event.target.value)}>
+                  {VOICE_MODELS.map((model) => <option key={model} value={model}>{model}</option>)}
+                </select>
+              </label>
+              <button type="button" className="save-api" onClick={saveApiSettings}>Save API settings</button>
+              <p className="api-note">Keys stay in this browser&apos;s local storage and are sent only to the local API server when you generate.</p>
+            </div>
             <div className="advanced-fields">
               <label className="file-drop clip-drop">
-                <Video size={20} />
                 <span>{backgroundName || "Choose background clip"}</span>
                 <input type="file" accept="video/*,.mp4,.webm,.mov,.m4v" onChange={handleFile} />
               </label>
 
               <div className="clip-download-row">
                 <input value={clipUrl} onChange={(event) => setClipUrl(event.target.value)} placeholder="YouTube clip URL" />
-                <button type="button" className="secondary" onClick={downloadClip} disabled={isDownloadingClip || !clipUrl.trim()}>
+                <button type="button" className={isDownloadingClip ? "secondary loading" : "secondary"} onClick={downloadClip} disabled={isDownloadingClip || !clipUrl.trim()}>
                   {isDownloadingClip ? "Downloading" : "Download clip"}
                 </button>
               </div>
@@ -962,21 +909,25 @@ function App() {
           {backgroundUrl && (
             <div className="clip-actions">
               <button type="button" onClick={randomizeClip} title="Choose a random starting point in the clip">
-                <Shuffle size={16} />
                 Randomize clip position
               </button>
               <button type="button" onClick={clearBackground} title="Remove background clip">
-                <X size={16} />
                 Remove
               </button>
             </div>
           )}
 
-              <div className="style-row" role="radiogroup" aria-label="Caption timing style">
+              <div className="style-row" role="group" aria-label="Caption timing style">
             <span>Caption timing</span>
             <div>
               {[["1 word", "1 word"], ["3 words", "3 words"]].map(([value, label]) => (
-                <button type="button" key={value} className={textStyle === value ? "style-button active" : "style-button"} onClick={() => setTextStyle(value)}>
+                <button
+                  type="button"
+                  key={value}
+                  className={textStyle === value ? "style-button active" : "style-button"}
+                  aria-pressed={textStyle === value}
+                  onClick={() => setTextStyle(value)}
+                >
                   {label}
                 </button>
               ))}
@@ -1057,12 +1008,11 @@ function App() {
           </label>
 
           <div className="action-row">
-            <button type="button" onClick={speakPreview}>
-              {isVoiceLoading ? <Loader2 className="spin" size={18} /> : <Mic size={18} />}
+            <button type="button" className={isVoiceLoading ? "loading" : ""} onClick={speakPreview} disabled={isVoiceLoading || !scenes.length}>
+              {isVoiceLoading && <span className="spin" aria-hidden="true" />}
               {isVoiceLoading ? "Preparing voice" : "Preview voice"}
             </button>
             <button type="button" onClick={stopSpeech}>
-              <Pause size={18} />
               Stop
             </button>
           </div>
@@ -1073,16 +1023,18 @@ function App() {
         <section className="stage">
           <div className="stage-header">
             <div>
-              <p className="eyebrow">{MODES[mode].label} · {Math.ceil(totalSeconds)} sec</p>
-              <h2>{title || "Untitled reading"}</h2>
+              <p className="eyebrow">FocusVid Reader</p>
+              <h1>{title || "Untitled reading"}</h1>
+              <p className="stats">{MODES[mode].label} | {wordCount} words | {scenes.length} scenes | {Math.ceil(totalSeconds)} sec</p>
+              {apiMessage && <p className="status-message" role="status" aria-live="polite">{apiMessage}</p>}
             </div>
             <div className="stage-actions">
-              <button type="button" className="secondary" onClick={generateScript} disabled={isGenerating || !sourceText.trim()}>
-                {isGenerating ? <Loader2 className="spin" size={17} /> : <Sparkles size={17} />}
+              <button type="button" className={isGenerating ? "secondary loading" : "secondary"} onClick={generateScript} disabled={isGenerating || !sourceText.trim()}>
+                {isGenerating && <span className="spin" aria-hidden="true" />}
                 {isGenerating ? "Generating" : "Generate script"}
               </button>
-              <button type="button" className="primary" onClick={renderVideo} disabled={isRendering || !scenes.length}>
-                {isRendering ? <Loader2 className="spin" size={18} /> : <Video size={18} />}
+              <button type="button" className={isRendering ? "primary loading" : "primary"} onClick={renderVideo} disabled={isRendering || !scenes.length}>
+                {isRendering && <span className="spin" aria-hidden="true" />}
                 {isRendering ? `${Math.round(renderProgress * 100)}%` : "Render video"}
               </button>
             </div>
@@ -1091,37 +1043,29 @@ function App() {
           <canvas ref={canvasRef} width="1080" height="1920" aria-label="Video preview" />
           <video ref={backgroundVideoRef} src={backgroundUrl} muted loop playsInline className="source-video" aria-hidden="true" />
 
-          <div className="outputs">
-            <div className="script-panel">
-              <div className="panel-title">
-                <FileText size={18} />
+          <details className="output-section" open={outputOpen} onToggle={(event) => setOutputOpen(event.currentTarget.open)}>
+            <summary>Output</summary>
+            <div className="outputs">
+              <label className="script-panel">
                 <span>Generated script</span>
-              </div>
+                <textarea readOnly value={scriptText} />
+              </label>
 
-              <textarea readOnly value={scriptText} />
-            </div>
-
-            <div className="download-panel">
-              <div className="panel-title">
-                <Wand2 size={18} />
+              <div className="download-panel">
                 <span>Export</span>
+                {videoUrl ? (
+                  <>
+                    <video src={videoUrl} controls />
+                    <a className="download" href={videoUrl} download={(title || "focus-video") + "." + (videoUrl.includes("/outputs/") ? "mp4" : "webm")}>
+                      Download {videoUrl.includes("/outputs/") ? "MP4" : "WebM"}
+                    </a>
+                  </>
+                ) : (
+                  <p className="empty-export">Render when the scenes feel right.</p>
+                )}
               </div>
-              {videoUrl ? (
-                <>
-                  <video src={videoUrl} controls />
-                  <a className="download" href={videoUrl} download={(title || "focus-video") + "." + (videoUrl.includes("/outputs/") ? "mp4" : "webm")}>
-                    <Download size={18} />
-                    Download {videoUrl.includes("/outputs/") ? "MP4" : "WebM"}
-                  </a>
-                </>
-              ) : (
-                <div className="empty-export">
-                  <Play size={30} />
-                  <span>Render when the scenes feel right.</span>
-                </div>
-              )}
             </div>
-          </div>
+          </details>
         </section>
       </section>
     </main>
