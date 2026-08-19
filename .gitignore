@@ -10,4 +10,4 @@ tools/*
 .env.*
 !.env.example
 npm-debug.log*
-
+vite-dev*.log

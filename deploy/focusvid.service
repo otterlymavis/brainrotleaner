@@ -1,0 +1,22 @@
+[Unit]
+Description=FocusVid Reader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/focusvid
+EnvironmentFile=/opt/focusvid/.env
+ExecStart=/usr/bin/node server.mjs
+Restart=on-failure
+RestartSec=5
+
+# Rendering is CPU-bound; keep it from starving the rest of a small VM.
+Nice=10
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

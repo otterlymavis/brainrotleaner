@@ -1,0 +1,20 @@
+# Terminates HTTPS with an automatic Let's Encrypt certificate and forwards to the app.
+# Replace the hostname with your own (a free DuckDNS subdomain works).
+# HTTPS matters here: the app's password travels as Basic Auth, which is
+# only base64 encoded, so over plain HTTP it is effectively sent in the clear.
+
+focusvid.duckdns.org {
+	encode zstd gzip
+
+	# Uploads and rendered videos are large, and a render holds the request open.
+	request_body {
+		max_size 2GB
+	}
+
+	reverse_proxy 127.0.0.1:8787 {
+		transport http {
+			read_timeout 30m
+			write_timeout 30m
+		}
+	}
+}
