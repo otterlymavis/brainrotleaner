@@ -277,11 +277,38 @@ summary {
   list-style: none;
 }
 
+.clip-results-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #7c857f;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.clip-results-header span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.clip-results-header button {
+  flex: none;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid #d5d7d1;
+  border-radius: 3px;
+  background: transparent;
+  color: #535f58;
+  font-weight: 700;
+  font-size: 0.76rem;
+  cursor: pointer;
+}
+
 .clip-results li {
   display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding: 6px 8px;
   border: 1px solid #e4e6e1;
   border-radius: 3px;
@@ -304,7 +331,20 @@ summary {
 
 .clip-result-actions {
   display: flex;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.clip-result-actions button {
+  flex: 1 1 auto;
+  min-width: 58px;
+  padding: 0 6px;
+  font-size: 0.76rem;
+}
+
+.clip-result-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .clip-result-meta small {

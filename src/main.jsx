@@ -71,8 +71,18 @@ const CLIP_PRESETS = [
   { label: "Minecraft parkour", query: "minecraft parkour gameplay no copyright vertical" },
   { label: "Parkour 4K", query: "minecraft parkour 4k no copyright gameplay 1 hour" },
   { label: "Subway Surfers", query: "subway surfers gameplay no copyright vertical" },
-  { label: "Satisfying", query: "satisfying soap cutting no copyright background" }
+  { label: "GTA ramps", query: "gta 5 ramp gameplay no copyright vertical" },
+  { label: "Satisfying", query: "satisfying soap cutting no copyright background" },
+  { label: "Slime ASMR", query: "slime asmr no copyright background vertical" }
 ];
+
+const formatViews = (views) => {
+  const count = Number(views) || 0;
+  if (!count) return "";
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M views`;
+  if (count >= 1_000) return `${Math.round(count / 1_000)}K views`;
+  return `${count} views`;
+};
 
 const formatClipDuration = (seconds) => {
   const total = Math.round(Number(seconds) || 0);
@@ -408,6 +418,7 @@ function App() {
   const [clipOffset, setClipOffset] = useState(0);
   const [clipQuery, setClipQuery] = useState(CLIP_PRESETS[0].query);
   const [clipResults, setClipResults] = useState([]);
+  const [clipResultsLabel, setClipResultsLabel] = useState("");
   const [isSearchingClips, setIsSearchingClips] = useState(false);
   const [sectionSeconds, setSectionSeconds] = useState(150);
   const [randomStart, setRandomStart] = useState(true);
@@ -730,28 +741,41 @@ function App() {
 
   const downloadClip = () => fetchClip(clipUrl);
 
-  const searchClips = async (query) => {
-    const term = (query ?? clipQuery).trim();
-    if (!term) return;
-    setClipQuery(term);
+  const searchClips = async (query, options = {}) => {
+    const { channelUrl = "", label = "" } = options;
+    const term = channelUrl ? "" : (query ?? clipQuery).trim();
+    if (!term && !channelUrl) return;
+    if (term) setClipQuery(term);
     setIsSearchingClips(true);
-    setApiMessage("");
+    setApiMessage(channelUrl ? `Loading videos from ${label || "channel"}...` : "");
     try {
       const response = await fetch("/api/clips/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: term, limit: 10, cookiesFromBrowser, cookiesFile })
+        body: JSON.stringify({ query: term, channelUrl, limit: channelUrl ? 20 : 10, cookiesFromBrowser, cookiesFile })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Clip search failed");
       setClipResults(data.results || []);
-      if (!data.results?.length) setApiMessage("No footage found for that search.");
+      setClipResultsLabel(channelUrl ? `${label || data.source || "Channel"} uploads` : `Results for "${term}"`);
+      setApiMessage(data.results?.length ? `${data.results.length} videos found` : "No footage found.");
     } catch (error) {
       setApiMessage(error.message || "Clip search failed");
     } finally {
       setIsSearchingClips(false);
     }
   };
+
+  // A channel with one usable parkour upload usually has many more like it.
+  const browseChannel = (result) => {
+    if (!result?.channelUrl) {
+      setApiMessage("No channel link available for that video.");
+      return;
+    }
+    searchClips("", { channelUrl: result.channelUrl, label: result.channel });
+  };
+
+  const findSimilar = (result) => searchClips(result.title);
 
   const copyClipLink = async (value) => {
     try {
@@ -1186,30 +1210,42 @@ function App() {
                   </div>
 
                   {clipResults.length > 0 && (
-                    <button type="button" className="secondary" onClick={copyAllClipLinks}>
-                      Copy all {clipResults.length} links
-                    </button>
-                  )}
+                    <>
+                      <div className="clip-results-header">
+                        <span>{clipResultsLabel}</span>
+                        <button type="button" onClick={copyAllClipLinks}>Copy all {clipResults.length}</button>
+                      </div>
 
-                  {clipResults.length > 0 && (
-                    <ul className="clip-results">
-                      {clipResults.map((result) => (
-                        <li key={result.id}>
-                          <div className="clip-result-meta">
-                            <a href={result.url} target="_blank" rel="noreferrer" title={result.title}>{result.title}</a>
-                            <small>{[result.channel, formatClipDuration(result.duration)].filter(Boolean).join(" | ")}</small>
-                          </div>
-                          <div className="clip-result-actions">
-                            <button type="button" onClick={() => copyClipLink(result.url)} title="Copy the video link">
-                              Copy link
-                            </button>
-                            <button type="button" onClick={() => fetchClip(result.url)} disabled={isDownloadingClip}>
-                              {isDownloadingClip ? "..." : "Use"}
-                            </button>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
+                      <ul className="clip-results">
+                        {clipResults.map((result) => (
+                          <li key={result.id}>
+                            <div className="clip-result-meta">
+                              <a href={result.url} target="_blank" rel="noreferrer" title={result.title}>{result.title}</a>
+                              <small>{[result.channel, formatClipDuration(result.duration), formatViews(result.views)].filter(Boolean).join(" | ")}</small>
+                            </div>
+                            <div className="clip-result-actions">
+                              <button
+                                type="button"
+                                onClick={() => browseChannel(result)}
+                                disabled={isSearchingClips || !result.channelUrl}
+                                title={result.channelUrl ? `More footage from ${result.channel}` : "No channel link available"}
+                              >
+                                Channel
+                              </button>
+                              <button type="button" onClick={() => findSimilar(result)} disabled={isSearchingClips} title="Search for videos like this one">
+                                Similar
+                              </button>
+                              <button type="button" onClick={() => copyClipLink(result.url)} title="Copy the video link">
+                                Link
+                              </button>
+                              <button type="button" onClick={() => fetchClip(result.url)} disabled={isDownloadingClip} title="Download a section and use it as the background">
+                                {isDownloadingClip ? "..." : "Use"}
+                              </button>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    </>
                   )}
 
                   <label>

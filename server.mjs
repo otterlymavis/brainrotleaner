@@ -439,19 +439,25 @@ const server = createHttpServer((request, response) => {
   }
 
   if (request.method === "POST" && request.url === "/api/clips/search") {
-    readJson(request).then(async ({ query, limit = 10, cookiesFromBrowser, cookiesFile }) => {
-      if (!query?.trim()) {
-        sendJson(response, 400, { error: "A search query is required." });
+    readJson(request).then(async ({ query, limit = 10, channelUrl, cookiesFromBrowser, cookiesFile }) => {
+      if (!query?.trim() && !channelUrl?.trim()) {
+        sendJson(response, 400, { error: "A search query or channel is required." });
         return;
       }
       try {
         const binary = await ensureYtDlp();
         const count = Math.max(1, Math.min(25, Number(limit) || 10));
+        // Browsing a channel's uploads is the highest-signal way to find more of the same
+        // footage: a channel with one usable parkour video usually has many.
+        const target = channelUrl?.trim()
+          ? `${channelUrl.trim().replace(/\/+$/, "")}/videos`
+          : `ytsearch${count}:${query.trim()}`;
         const { stdout } = await runCapture(binary, [
-          `ytsearch${count}:${query.trim()}`,
+          target,
           "--flat-playlist",
           "--dump-single-json",
           "--no-warnings",
+          "--playlist-end", String(count),
           ...sourceArgs({ cookiesFromBrowser, cookiesFile })
         ]);
         const parsed = JSON.parse(stdout || "{}");
@@ -460,11 +466,13 @@ const server = createHttpServer((request, response) => {
           .map((entry) => ({
             id: entry.id,
             title: entry.title || "Untitled",
-            channel: entry.channel || entry.uploader || "",
+            channel: entry.channel || entry.uploader || parsed.channel || parsed.uploader || "",
+            channelUrl: entry.uploader_url || entry.channel_url || parsed.uploader_url || parsed.channel_url || "",
             duration: Number(entry.duration) || 0,
+            views: Number(entry.view_count) || 0,
             url: entry.url?.startsWith("http") ? entry.url : `https://www.youtube.com/watch?v=${entry.id}`
           }));
-        sendJson(response, 200, { results });
+        sendJson(response, 200, { results, source: channelUrl ? (parsed.channel || parsed.title || "channel") : "" });
       } catch (error) {
         sendJson(response, 502, { error: error.message });
       }
