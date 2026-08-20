@@ -481,7 +481,11 @@ const server = createHttpServer((request, response) => {
       } catch (error) {
         sendJson(response, 502, { error: error.message });
       }
-    }).catch(() => sendJson(response, 400, { error: "Invalid JSON request." }));
+    }).catch(() => {
+      if (!response.writableEnded && !renderAbort.signal.aborted) {
+        sendJson(response, 400, { error: "Invalid JSON request." });
+      }
+    });
     return;
   }
 
@@ -575,6 +579,13 @@ const server = createHttpServer((request, response) => {
   }
 
   if (request.method === "POST" && request.url === "/api/render") {
+    const renderAbort = new AbortController();
+    const abortRender = () => {
+      if (!response.writableEnded) renderAbort.abort();
+    };
+    request.on("aborted", abortRender);
+    response.on("close", abortRender);
+
     readJson(request).then(async ({ backgroundBase64, backgroundUrl, audioBase64, words, textStyle, captionStyle, fontBase64, fontFileName, clipOffset = 0, randomStart = false, backgroundVolume = 0 }) => {
       if ((!backgroundBase64 && !backgroundUrl?.startsWith("/clips/")) || !audioBase64 || !words?.length) {
         sendJson(response, 400, { error: "Background clip, audio, and word timings are required." });
@@ -622,10 +633,14 @@ const server = createHttpServer((request, response) => {
           "-b:a", "192k",
           "-movflags", "+faststart",
           outputPath
-        ]);
-        sendJson(response, 200, { url: `/outputs/${id}.mp4`, clipOffset: offset });
+        ], { signal: renderAbort.signal });
+        if (!response.writableEnded) sendJson(response, 200, { url: `/outputs/${id}.mp4`, clipOffset: offset });
       } catch (error) {
-        sendJson(response, 502, { error: error.message });
+        if (renderAbort.signal.aborted) {
+          await fs.rm(outputPath, { force: true });
+          return;
+        }
+        if (!response.writableEnded) sendJson(response, 502, { error: error.message });
       } finally {
         await Promise.all([backgroundPath, audioPath, fontPath].filter(Boolean).map((filepath) => fs.rm(filepath, { force: true })));
       }

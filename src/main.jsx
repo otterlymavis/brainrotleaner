@@ -458,6 +458,7 @@ function App() {
   const rafRef = useRef(0);
   const voiceRequestRef = useRef(0);
   const savedTimerRef = useRef(0);
+  const renderAbortRef = useRef(null);
 
   useEffect(() => {
     try {
@@ -520,6 +521,10 @@ function App() {
 
   useEffect(() => () => {
     window.clearTimeout(savedTimerRef.current);
+  }, []);
+
+  useEffect(() => () => {
+    renderAbortRef.current?.abort();
   }, []);
 
   useEffect(() => {
@@ -635,6 +640,8 @@ function App() {
     setIsRendering(true);
     setRenderProgress(0);
     setVideoUrl("");
+    const renderAbort = new AbortController();
+    renderAbortRef.current = renderAbort;
 
     try {
     let renderVoiceUrl = voiceUrl;
@@ -663,6 +670,7 @@ function App() {
         const response = await fetch("/api/render", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          signal: renderAbort.signal,
           body: JSON.stringify({ backgroundBase64, backgroundUrl, audioBase64: renderVoiceBase64, words: renderWords, textStyle, captionStyle, fontBase64, fontFileName, clipOffset, randomStart, backgroundVolume })
         });
         const data = await response.json();
@@ -672,6 +680,7 @@ function App() {
         setIsRendering(false);
         return;
       } catch (error) {
+        if (error.name === "AbortError") throw error;
         setApiMessage(error.message || "MP4 rendering failed");
       }
     }
@@ -701,10 +710,18 @@ function App() {
     const totalFrames = Math.ceil(renderDuration * fps);
     recorder.start();
 
-    for (let frame = 0; frame <= totalFrames; frame += 1) {
-      drawFrame(ctx, canvas, frame, scenes, mode, accent, textStyle, backgroundVideoRef.current, renderWords, captionStyle);
-      setRenderProgress(frame / totalFrames);
-      await new Promise((resolve) => setTimeout(resolve, 1000 / fps));
+    try {
+      for (let frame = 0; frame <= totalFrames; frame += 1) {
+        if (renderAbort.signal.aborted) throw new DOMException("Rendering canceled", "AbortError");
+        drawFrame(ctx, canvas, frame, scenes, mode, accent, textStyle, backgroundVideoRef.current, renderWords, captionStyle);
+        setRenderProgress(frame / totalFrames);
+        await new Promise((resolve) => setTimeout(resolve, 1000 / fps));
+      }
+    } catch (error) {
+      if (recorder.state !== "inactive") recorder.stop();
+      audioElement?.pause();
+      stream.getTracks().forEach((track) => track.stop());
+      throw error;
     }
 
     const recorderStopped = new Promise((resolve) => {
@@ -714,13 +731,23 @@ function App() {
     await recorderStopped;
     const blob = new Blob(chunks, { type: "video/webm" });
     audioElement?.pause();
+    stream.getTracks().forEach((track) => track.stop());
     setVideoUrl(URL.createObjectURL(blob));
     setIsRendering(false);
     setRenderProgress(1);
     } catch (error) {
-      setApiMessage(error.message || "Could not render video");
+      setApiMessage(error.name === "AbortError" ? "Rendering canceled." : error.message || "Could not render video");
       setIsRendering(false);
+      setRenderProgress(0);
+    } finally {
+      if (renderAbortRef.current === renderAbort) renderAbortRef.current = null;
     }
+  };
+
+  const stopRendering = () => {
+    if (!renderAbortRef.current) return;
+    renderAbortRef.current.abort();
+    setApiMessage("Stopping render...");
   };
 
   const clearBackground = () => {
@@ -1480,10 +1507,17 @@ function App() {
                 </button>
               )}
               {!isBionicMode && (
-                <button type="button" className={isRendering ? "primary loading" : "primary"} onClick={renderVideo} disabled={isRendering || !scenes.length}>
-                  {isRendering && <span className="spin" aria-hidden="true" />}
-                  {isRendering ? `${Math.round(renderProgress * 100)}%` : isAdvanced ? "Render video" : "Create video"}
-                </button>
+                <>
+                  <button type="button" className={isRendering ? "primary loading" : "primary"} onClick={renderVideo} disabled={isRendering || !scenes.length}>
+                    {isRendering && <span className="spin" aria-hidden="true" />}
+                    {isRendering ? `${Math.round(renderProgress * 100)}%` : isAdvanced ? "Render video" : "Create video"}
+                  </button>
+                  {isRendering && (
+                    <button type="button" className="danger" onClick={stopRendering}>
+                      Stop
+                    </button>
+                  )}
+                </>
               )}
             </div>
           </div>
