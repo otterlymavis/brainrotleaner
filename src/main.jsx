@@ -396,6 +396,14 @@ function BionicText({ text }) {
 }
 
 function App() {
+  const [uiMode, setUiMode] = useState(() => {
+    try {
+      const editor = JSON.parse(localStorage.getItem("focusvid-editor-settings") || "{}");
+      return editor.uiMode === "advanced" ? "advanced" : "simple";
+    } catch {
+      return "simple";
+    }
+  });
   const [sourceText, setSourceText] = useState(SAMPLE_TEXT);
   const [title, setTitle] = useState("Working Memory and Reading");
   const [mode, setMode] = useState("focus");
@@ -461,6 +469,7 @@ function App() {
       if (saved.voiceProvider && VOICE_PROVIDERS[saved.voiceProvider]) setVoiceProvider(saved.voiceProvider);
       if (saved.voiceModel) setVoiceModel(saved.voiceModel);
       const editor = JSON.parse(localStorage.getItem("focusvid-editor-settings") || "{}");
+      if (editor.uiMode === "simple" || editor.uiMode === "advanced") setUiMode(editor.uiMode);
       if (editor.inputType) setInputType(editor.inputType);
       if (editor.mode && MODES[editor.mode]) setMode(editor.mode);
       if (editor.captionStyle) setCaptionStyle((current) => ({ ...current, ...editor.captionStyle, fontFamily: editor.captionStyle.fontFamily === "Inter, Arial, sans-serif" ? "Arial" : (editor.captionStyle.fontFamily || current.fontFamily) }));
@@ -513,6 +522,15 @@ function App() {
     window.clearTimeout(savedTimerRef.current);
   }, []);
 
+  useEffect(() => {
+    try {
+      const editor = JSON.parse(localStorage.getItem("focusvid-editor-settings") || "{}");
+      localStorage.setItem("focusvid-editor-settings", JSON.stringify({ ...editor, uiMode }));
+    } catch {
+      // Ignore storage failures; the toggle still works for this session.
+    }
+  }, [uiMode]);
+
   const scenes = useMemo(
     () => makeScenes(sourceText, mode, wordsPerScene),
     [sourceText, mode, wordsPerScene]
@@ -521,6 +539,7 @@ function App() {
   const totalSeconds = timedWords.length ? timedWords.at(-1).end : scenes.reduce((sum, scene) => sum + scene.duration, 0);
   const wordCount = stripText(sourceText).split(/\s+/).filter(Boolean).length;
   const isBionicMode = mode === "bionic";
+  const isAdvanced = uiMode === "advanced";
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -827,7 +846,7 @@ function App() {
       "focusvid-api-settings",
       JSON.stringify({ provider: apiProvider, model: apiModel, aiApiKey, deepgramApiKey, voiceProvider, voiceModel })
     );
-    localStorage.setItem("focusvid-editor-settings", JSON.stringify({ inputType, mode, captionStyle, accent, textStyle, cookiesFromBrowser, cookiesFile, sectionSeconds, randomStart, backgroundVolume }));
+    localStorage.setItem("focusvid-editor-settings", JSON.stringify({ uiMode, inputType, mode, captionStyle, accent, textStyle, cookiesFromBrowser, cookiesFile, sectionSeconds, randomStart, backgroundVolume }));
     window.clearTimeout(savedTimerRef.current);
     setSavedSection(section);
     setApiMessage(message);
@@ -993,51 +1012,140 @@ function App() {
 
   return (
     <main className="app-shell">
+      <header className="app-header">
+        <div>
+          <p className="eyebrow">FocusVid Reader</p>
+          <p className="app-subtitle">Turn reading material into a focused experience.</p>
+        </div>
+        <div className="mode-toggle" role="group" aria-label="Interface mode">
+          {['simple', 'advanced'].map((value) => (
+            <button
+              type="button"
+              key={value}
+              className={uiMode === value ? 'style-button active' : 'style-button'}
+              aria-pressed={uiMode === value}
+              onClick={() => setUiMode(value)}
+            >
+              {value === 'simple' ? 'Simple' : 'Advanced'}
+            </button>
+          ))}
+        </div>
+      </header>
       <section className="workspace">
         <aside className="controls">
-          <label className="file-drop">
-            <span>{isExtracting ? "Reading file..." : "Upload PDF or text"}</span>
-            <input type="file" accept=".pdf,.txt,.md,text/plain,application/pdf" onChange={handleFile} />
-          </label>
+          {!isAdvanced && (
+            <div className="simple-flow">
+              <div className="simple-step">
+                <div className="step-heading">
+                  <span className="step-number">1</span>
+                  <div>
+                    <h2>Add your material</h2>
+                    <p>Upload a file or paste text below.</p>
+                  </div>
+                </div>
+                <label className="file-drop">
+                  <span>{isExtracting ? "Reading file..." : "Upload PDF or text"}</span>
+                  <input type="file" accept=".pdf,.txt,.md,text/plain,application/pdf" onChange={handleFile} />
+                </label>
+                <label>
+                  <span>{inputType === "idea" ? "Video idea" : "Study material"}</span>
+                  <textarea value={sourceText} onChange={(event) => setSourceText(event.target.value)} />
+                </label>
+              </div>
 
-          <label>
-            <span>Title</span>
-            <input value={title} onChange={(event) => setTitle(event.target.value)} />
-          </label>
+              <div className="simple-step">
+                <div className="step-heading">
+                  <span className="step-number">2</span>
+                  <div>
+                    <h2>Choose a style</h2>
+                    <p>Pick the way you want to read or watch.</p>
+                  </div>
+                </div>
+                <div className="style-choice-grid" role="radiogroup" aria-label="Reading style">
+                  {Object.entries(MODES).map(([key, item]) => (
+                    <button
+                      type="button"
+                      key={key}
+                      className={mode === key ? "style-choice active" : "style-choice"}
+                      role="radio"
+                      aria-checked={mode === key}
+                      onClick={() => setMode(key)}
+                      title={item.description}
+                    >
+                      <strong>{item.label}</strong>
+                      <span>{item.description}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-          <div className="split-row">
-            <label>
-              <span>Input</span>
-              <select value={inputType} onChange={(event) => setInputType(event.target.value)}>
-                <option value="material">Study material</option>
-                <option value="idea">Idea</option>
-              </select>
+              <div className="simple-step simple-step-last">
+                <div className="step-heading">
+                  <span className="step-number">3</span>
+                  <div>
+                    <h2>Preview your result</h2>
+                    <p>{isBionicMode ? "Your reading view updates as you type." : "Use the preview, then create a video when ready."}</p>
+                  </div>
+                </div>
+                {!isBionicMode && (
+                  <button type="button" className={isVoiceLoading ? "secondary loading" : "secondary simple-preview-button"} onClick={speakPreview} disabled={isVoiceLoading || !scenes.length}>
+                    {isVoiceLoading && <span className="spin" aria-hidden="true" />}
+                    {isVoiceLoading ? "Preparing voice" : "Preview voice"}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {isAdvanced && (
+            <label className="file-drop">
+              <span>{isExtracting ? "Reading file..." : "Upload PDF or text"}</span>
+              <input type="file" accept=".pdf,.txt,.md,text/plain,application/pdf" onChange={handleFile} />
             </label>
+          )}
 
+          {isAdvanced && (
             <label>
-              <span>Theme</span>
-              <select value={theme} onChange={(event) => setTheme(event.target.value)}>
-                <option value="Facts">Facts</option>
-                <option value="Horror">Horror</option>
-              </select>
+              <span>Title</span>
+              <input value={title} onChange={(event) => setTitle(event.target.value)} />
             </label>
-          </div>
+          )}
 
-          <label>
+          {isAdvanced && (
+            <div className="split-row">
+              <label>
+                <span>Input</span>
+                <select value={inputType} onChange={(event) => setInputType(event.target.value)}>
+                  <option value="material">Study material</option>
+                  <option value="idea">Idea</option>
+                </select>
+              </label>
+
+              <label>
+                <span>Theme</span>
+                <select value={theme} onChange={(event) => setTheme(event.target.value)}>
+                  <option value="Facts">Facts</option>
+                  <option value="Horror">Horror</option>
+                </select>
+              </label>
+            </div>
+          )}
+
+          {isAdvanced && <label>
             <span>{inputType === "idea" ? "Video idea" : "Study material"}</span>
             <textarea value={sourceText} onChange={(event) => setSourceText(event.target.value)} />
-          </label>
+          </label>}
 
-          <label>
+          {isAdvanced && <label>
             <span>Mode</span>
             <select value={mode} onChange={(event) => setMode(event.target.value)} title={MODES[mode].description}>
               {Object.entries(MODES).map(([key, item]) => (
                 <option key={key} value={key}>{item.label}</option>
               ))}
             </select>
-          </label>
+          </label>}
 
-          {!isBionicMode && (
+          {!isBionicMode && isAdvanced && (
             <details className="control-section">
               <summary>Script options</summary>
               <div className="section-fields">
@@ -1061,7 +1169,7 @@ function App() {
             </details>
           )}
 
-          {!isBionicMode && (
+          {!isBionicMode && isAdvanced && (
             <>
               <details className="control-section">
                 <summary>Voice {savedSection === "voice" ? "saved" : ""}</summary>
@@ -1328,33 +1436,34 @@ function App() {
             </>
           )}
 
-          <details className="control-section">
-            <summary>API settings {savedSection === "api" ? "saved" : ""}</summary>
-            <div className="section-fields">
-              <label>
-                <span>AI provider</span>
-                <select value={apiProvider} onChange={(event) => chooseProvider(event.target.value)}>
-                  {Object.entries(AI_PROVIDERS).map(([value, item]) => <option key={value} value={value}>{item.label}</option>)}
-                </select>
-              </label>
-              <label>
-                <span>AI model</span>
-                <input value={apiModel} onChange={(event) => setApiModel(event.target.value)} />
-              </label>
-              <label>
-                <span>{AI_PROVIDERS[apiProvider].label} API key</span>
-                <input type="password" value={aiApiKey} onChange={(event) => setAiApiKey(event.target.value)} placeholder="Paste provider key" autoComplete="off" />
-              </label>
-              <button type="button" className="save-settings" onClick={() => saveSettings()}>Save settings</button>
-              <p className="api-note">Keys stay in this browser&apos;s local storage and are sent only to the local API server when you generate.</p>
-            </div>
-          </details>
+          {isAdvanced && (
+            <details className="control-section">
+              <summary>API settings {savedSection === "api" ? "saved" : ""}</summary>
+              <div className="section-fields">
+                <label>
+                  <span>AI provider</span>
+                  <select value={apiProvider} onChange={(event) => chooseProvider(event.target.value)}>
+                    {Object.entries(AI_PROVIDERS).map(([value, item]) => <option key={value} value={value}>{item.label}</option>)}
+                  </select>
+                </label>
+                <label>
+                  <span>AI model</span>
+                  <input value={apiModel} onChange={(event) => setApiModel(event.target.value)} />
+                </label>
+                <label>
+                  <span>{AI_PROVIDERS[apiProvider].label} API key</span>
+                  <input type="password" value={aiApiKey} onChange={(event) => setAiApiKey(event.target.value)} placeholder="Paste provider key" autoComplete="off" />
+                </label>
+                <button type="button" className="save-settings" onClick={() => saveSettings()}>Save settings</button>
+                <p className="api-note">Keys stay in this browser&apos;s local storage and are sent only to the local API server when you generate.</p>
+              </div>
+            </details>
+          )}
         </aside>
 
         <section className="stage">
           <div className="stage-header">
             <div>
-              <p className="eyebrow">FocusVid Reader</p>
               <h1>{title || "Untitled reading"}</h1>
               <p className="stats">
                 {isBionicMode
@@ -1364,14 +1473,16 @@ function App() {
               {apiMessage && <p className="status-message" role="status" aria-live="polite">{apiMessage}</p>}
             </div>
             <div className="stage-actions">
-              <button type="button" className={isGenerating ? "secondary loading" : "secondary"} onClick={generateScript} disabled={isGenerating || !sourceText.trim()}>
-                {isGenerating && <span className="spin" aria-hidden="true" />}
-                {isGenerating ? "Generating" : isBionicMode ? "Generate text" : "Generate script"}
-              </button>
+              {isAdvanced && (
+                <button type="button" className={isGenerating ? "secondary loading" : "secondary"} onClick={generateScript} disabled={isGenerating || !sourceText.trim()}>
+                  {isGenerating && <span className="spin" aria-hidden="true" />}
+                  {isGenerating ? "Generating" : isBionicMode ? "Generate text" : "Generate script"}
+                </button>
+              )}
               {!isBionicMode && (
                 <button type="button" className={isRendering ? "primary loading" : "primary"} onClick={renderVideo} disabled={isRendering || !scenes.length}>
                   {isRendering && <span className="spin" aria-hidden="true" />}
-                  {isRendering ? `${Math.round(renderProgress * 100)}%` : "Render video"}
+                  {isRendering ? `${Math.round(renderProgress * 100)}%` : isAdvanced ? "Render video" : "Create video"}
                 </button>
               )}
             </div>

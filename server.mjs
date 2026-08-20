@@ -1,7 +1,7 @@
 import { createServer as createHttpServer } from "node:http";
 import { promises as fs, createReadStream, createWriteStream, readFileSync } from "node:fs";
 import opentype from "opentype.js";
-import { join, basename, extname, dirname, resolve } from "node:path";
+import { join, basename, extname, dirname, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
 import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import ffmpeg from "@ffmpeg-installer/ffmpeg";
@@ -150,8 +150,11 @@ const STATIC_TYPES = {
 const sendStatic = async (response, requestPath) => {
   const relative = decodeURIComponent(requestPath.split("?")[0]).replace(/^\/+/, "");
   const candidate = resolve(staticDir, relative || "index.html");
-  // Never serve outside the build directory, whatever the request path claims.
-  const filepath = candidate.startsWith(resolve(staticDir)) ? candidate : join(staticDir, "index.html");
+  // Never serve outside the build directory, whatever the request path claims. The
+  // separator matters: a bare prefix test also accepts siblings like dist-backup.
+  const root = resolve(staticDir);
+  const inside = candidate === root || candidate.startsWith(root + sep);
+  const filepath = inside ? candidate : join(staticDir, "index.html");
   let target = filepath;
   try {
     const stat = await fs.stat(target);
@@ -265,7 +268,7 @@ const createCaptionFilter = (words, style, captionStyle = {}, fontPath = "") => 
     if (!measured) {
       // No readable font file: fall back to letting ffmpeg lay out the whole line. The
       // highlight cannot be aligned to that, so the group is drawn without one.
-      chunks.push(`drawtext=${fontSource}:text='${escapeText(groupText)}':fontcolor=${textColor}:fontsize=${fontSize}:borderw=${strokeWidth}:bordercolor=${strokeColor}:x=${fallbackX}:y=${position}:enable=between(t\\,${start}\\,${end})`);
+      chunks.push(`drawtext=${fontSource}:text='${escapeText(groupText)}':expansion=none:fontcolor=${textColor}:fontsize=${fontSize}:borderw=${strokeWidth}:bordercolor=${strokeColor}:x=${fallbackX}:y=${position}:enable=between(t\\,${start}\\,${end})`);
       continue;
     }
 
@@ -279,7 +282,9 @@ const createCaptionFilter = (words, style, captionStyle = {}, fontPath = "") => 
       const wordX = cursor.toFixed(2);
       cursor += wordWidths[wordIndex] + spaceWidth;
       const text = escapeText(word);
-      const common = `${fontSource}:text='${text}':fontsize=${fontSize}:borderw=${strokeWidth}:bordercolor=${strokeColor}:x=${wordX}:y=${baselineY}`;
+      // expansion=none: drawtext otherwise treats %{...} as a directive, so a caption
+      // containing a percent sign renders wrong or vanishes.
+      const common = `${fontSource}:text='${text}':expansion=none:fontsize=${fontSize}:borderw=${strokeWidth}:bordercolor=${strokeColor}:x=${wordX}:y=${baselineY}`;
 
       chunks.push(`drawtext=${common}:fontcolor=${textColor}:enable=between(t\\,${start}\\,${end})`);
 
