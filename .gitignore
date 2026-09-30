@@ -6,6 +6,7 @@ tools/*
 !clips/.gitkeep
 !outputs/.gitkeep
 !tools/.gitkeep
+!tools/smoke-render.mjs
 .env
 .env.*
 !.env.example

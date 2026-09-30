@@ -22,14 +22,40 @@ const appPassword = process.env.APP_PASSWORD || "";
 // The npm build is an old 4.1.x; a distro package (apt install ffmpeg) can be pointed at instead.
 const ffmpegPath = process.env.FFMPEG_PATH || ffmpeg.path;
 const clipsDir = join(dataDir, "clips");
+const musicDir = join(dataDir, "music");
+const voiceoversDir = join(dataDir, "voiceovers");
 const outputsDir = join(dataDir, "outputs");
 const toolsDir = join(dataDir, "tools");
+const MAX_JSON_BODY_BYTES = 64 * 1024 * 1024;
+const MAX_CLIP_UPLOAD_BYTES = 1024 * 1024 * 1024;
+const MAX_AUDIO_UPLOAD_BYTES = 256 * 1024 * 1024;
 
-await Promise.all([fs.mkdir(clipsDir, { recursive: true }), fs.mkdir(outputsDir, { recursive: true }), fs.mkdir(toolsDir, { recursive: true })]);
+await Promise.all([
+  fs.mkdir(clipsDir, { recursive: true }),
+  fs.mkdir(musicDir, { recursive: true }),
+  fs.mkdir(voiceoversDir, { recursive: true }),
+  fs.mkdir(outputsDir, { recursive: true }),
+  fs.mkdir(toolsDir, { recursive: true })
+]);
 
 const readJson = async (request) => {
+  const declaredLength = Number(request.headers["content-length"] || 0);
+  if (declaredLength > MAX_JSON_BODY_BYTES) {
+    const error = new Error("Request body is too large.");
+    error.statusCode = 413;
+    throw error;
+  }
   const chunks = [];
-  for await (const chunk of request) chunks.push(chunk);
+  let total = 0;
+  for await (const chunk of request) {
+    total += chunk.length;
+    if (total > MAX_JSON_BODY_BYTES) {
+      const error = new Error("Request body is too large.");
+      error.statusCode = 413;
+      throw error;
+    }
+    chunks.push(chunk);
+  }
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
 };
 
@@ -119,6 +145,15 @@ const resolveDefaultFont = async () => {
 };
 
 const safeName = (name) => basename(name).replace(/[^a-zA-Z0-9._-]/g, "_");
+const AUDIO_EXTENSIONS = /\.(mp3|wav|m4a|aac|ogg|flac)$/i;
+const audioContentType = (filepath) => ({
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+  ".ogg": "audio/ogg",
+  ".flac": "audio/flac"
+}[extname(filepath).toLowerCase()] || "application/octet-stream");
 
 // Hashing first keeps the comparison constant-time without leaking the password length.
 const digest = (value) => createHash("sha256").update(String(value)).digest();
@@ -175,8 +210,91 @@ const hexColor = (value, fallback) => /^#[0-9a-f]{6}$/i.test(value || "") ? valu
 const escapeFilterPath = (value) => value.replace(/\\/g, "/").replace(/:/g, "\\:");
 
 // Captions are drawn after the scale/crop, so the frame is always this wide.
-const VIDEO_WIDTH = 1080;
+const RENDER_PROFILES = {
+  portrait: { width: 1080, height: 1920 },
+  landscape: { width: 1920, height: 1080 },
+  square: { width: 1080, height: 1080 }
+};
+const RENDER_LAYOUTS = new Set(["full", "bottom-third", "split"]);
+const WATERMARK_SCALES = new Set(["small", "medium", "large"]);
+const DEFAULT_RENDER_OPTIONS = Object.freeze({
+  renderProfile: "portrait",
+  layout: "full",
+  watermark: Object.freeze({ enabled: false, text: "", opacity: 0.72, scale: "medium" })
+});
 const TEXT_MARGIN = 72;
+
+const normalizeRenderOptions = ({ renderProfile, layout, watermark } = {}) => {
+  const profileKey = Object.prototype.hasOwnProperty.call(RENDER_PROFILES, renderProfile) ? renderProfile : DEFAULT_RENDER_OPTIONS.renderProfile;
+  const layoutKey = RENDER_LAYOUTS.has(layout) ? layout : DEFAULT_RENDER_OPTIONS.layout;
+  const source = watermark && typeof watermark === "object" ? watermark : {};
+  const text = String(source.text || "").trim();
+  const opacityValue = Number(source.opacity);
+  const opacity = Number.isFinite(opacityValue) ? Math.max(0.05, Math.min(1, opacityValue)) : DEFAULT_RENDER_OPTIONS.watermark.opacity;
+  const scale = WATERMARK_SCALES.has(source.scale) ? source.scale : DEFAULT_RENDER_OPTIONS.watermark.scale;
+  return {
+    renderProfile: profileKey,
+    layout: layoutKey,
+    watermark: { enabled: Boolean(source.enabled) && Boolean(text), text, opacity, scale }
+  };
+};
+
+const normalizeSceneTimeline = (sceneTimeline, duration) => {
+  if (!Array.isArray(sceneTimeline) || !sceneTimeline.length || !Number.isFinite(duration) || duration <= 0) return [];
+  const normalized = sceneTimeline.map((scene, index) => ({
+    start: Number(scene?.start),
+    end: Number(scene?.end),
+    index: Number.isInteger(scene?.index) ? scene.index : index
+  }));
+  if (normalized.some((scene) => !Number.isFinite(scene.start) || !Number.isFinite(scene.end) || scene.start < -0.05 || scene.end <= scene.start)) return [];
+  if (normalized[0].start > 0.05 || normalized.at(-1).end < duration - 0.05) return [];
+  for (let index = 1; index < normalized.length; index += 1) {
+    if (Math.abs(normalized[index].start - normalized[index - 1].end) > 0.08) return [];
+  }
+  return normalized.map((scene, index) => ({
+    start: index === 0 ? 0 : Math.max(0, normalized[index - 1].end),
+    end: index === normalized.length - 1 ? duration : Math.min(duration, scene.end),
+    index: scene.index
+  })).filter((scene) => scene.end > scene.start);
+};
+
+const buildSynchronizedGameplay = (filterParts, sceneTimeline, clipDuration) => {
+  if (!sceneTimeline.length || !clipDuration) return "[0:v]";
+  const inputLabels = sceneTimeline.map((_, index) => `[scene-input-${index}]`);
+  filterParts.push(`[0:v]split=${sceneTimeline.length}${inputLabels.join("")}`);
+  const sceneLabels = [];
+  const normalWidth = 1920;
+  const normalHeight = 1080;
+  const emphasisWidth = 2036;
+  const emphasisHeight = 1144;
+  sceneTimeline.forEach((scene, index) => {
+    const duration = Math.max(0.01, scene.end - scene.start);
+    // The input is already seeked to the requested clip offset before it reaches
+    // this filter graph, so scene trims must be relative to that seeked input.
+    const segmentStart = (index / sceneTimeline.length) * clipDuration;
+    const portions = [
+      { start: segmentStart, duration: Math.min(0.125, duration), zoom: false },
+      { start: segmentStart + 0.125, duration: Math.min(0.125, Math.max(0, duration - 0.125)), zoom: true },
+      { start: segmentStart + 0.25, duration: Math.max(0, duration - 0.25), zoom: false }
+    ].filter((portion) => portion.duration > 0.005);
+    const portionInputs = portions.map((_, portionIndex) => `[scene-${index}-portion-input-${portionIndex}]`);
+    filterParts.push(`${inputLabels[index]}split=${portions.length}${portionInputs.join("")}`);
+    const portionLabels = [];
+    portions.forEach((portion, portionIndex) => {
+      const portionLabel = `[scene-${index}-portion-${portionIndex}]`;
+      portionLabels.push(portionLabel);
+      const scale = portion.zoom
+        ? `scale=${emphasisWidth}:${emphasisHeight}:force_original_aspect_ratio=increase,crop=${normalWidth}:${normalHeight},setsar=1`
+        : `scale=${normalWidth}:${normalHeight}:force_original_aspect_ratio=increase,crop=${normalWidth}:${normalHeight},setsar=1`;
+      filterParts.push(`${portionInputs[portionIndex]}trim=start=${(portion.start % clipDuration).toFixed(3)}:duration=${portion.duration.toFixed(3)},setpts=PTS-STARTPTS,${scale}${portionLabel}`);
+    });
+    const sceneLabel = `[scene-segment-${index}]`;
+    sceneLabels.push(sceneLabel);
+    filterParts.push(`${portionLabels.join("")}concat=n=${portionLabels.length}:v=1:a=0${sceneLabel}`);
+  });
+  filterParts.push(`${sceneLabels.join("")}concat=n=${sceneLabels.length}:v=1:a=0[synchronized-gameplay]`);
+  return "[synchronized-gameplay]";
+};
 
 const fontCache = new Map();
 
@@ -212,9 +330,13 @@ const measureText = (font, text, fontSize) => {
   }
 };
 
-const createCaptionFilter = (words, style, captionStyle = {}, fontPath = "") => {
-  const groupSize = style === "1 word" ? 1 : 3;
-  const fontSize = Math.max(28, Math.min(110, Number(captionStyle.fontSize) || 58));
+const createCaptionFilter = (words, style, captionStyle = {}, fontPath = "", renderProfile = "portrait", layout = "full", watermark = {}) => {
+  const profile = RENDER_PROFILES[renderProfile] || RENDER_PROFILES.portrait;
+  const videoWidth = profile.width;
+  const margin = Math.round(TEXT_MARGIN * videoWidth / 1080);
+  // Show a three-line caption window while keeping the active-word timing.
+  const groupSize = Math.max(1, Number.parseInt(style, 10) || 3);
+  const fontSize = Math.max(28, Math.min(140, Math.round((Number(captionStyle.fontSize) || 58) * videoWidth / 1080)));
   const textColor = hexColor(captionStyle.textColor, "#f8fafc");
   const strokeColor = hexColor(captionStyle.strokeColor, "#101820");
   const strokeWidth = Math.max(0, Math.min(12, Number(captionStyle.strokeWidth) || 0));
@@ -222,9 +344,10 @@ const createCaptionFilter = (words, style, captionStyle = {}, fontPath = "") => 
   const fontFamily = ["Arial", "Georgia", "Trebuchet MS", "Courier New"].includes(requestedFont) ? requestedFont : "Arial";
   const resolvedFont = fontPath || defaultFontPath;
   const fontSource = resolvedFont ? "fontfile='" + escapeFilterPath(resolvedFont) + "'" : "font='" + fontFamily + "'";
-  const highlightColor = hexColor(captionStyle.highlightColor, "#10b981");
-  const position = captionStyle.position === "top" ? "h*0.2" : captionStyle.position === "bottom" ? "h*0.75" : "(h-text_h)/2";
+  const highlightColor = hexColor(captionStyle.highlightColor, "#a35c7a");
+  const position = captionStyle.position === "top" ? "h*0.2" : captionStyle.position === "bottom" ? "h*0.75" : layout === "bottom-third" ? "h*0.28" : "(h-text_h)/2";
   const align = captionStyle.align;
+  const contentWidth = layout === "split" ? Math.round(videoWidth * 0.52) : videoWidth;
   const font = loadFont(resolvedFont);
 
   // Words are drawn one at a time, and drawtext anchors each to the top of its own
@@ -237,21 +360,20 @@ const createCaptionFilter = (words, style, captionStyle = {}, fontPath = "") => 
     ? "h*0.2"
     : captionStyle.position === "bottom"
       ? "h*0.75"
-      : `(h-${glyphHeightPx})/2`;
-  const baselineY = `${lineTop}+${ascentPx}-ascent`;
+      : layout === "bottom-third" ? "h*0.28" : `(h-${glyphHeightPx})/2`;
 
   const escapeText = (value) => String(value).replace(/[\\':,]/g, "\\$&");
 
   // Where a run of text of a known width starts, in absolute pixels.
   const startOfLine = (width) => align === "right"
-    ? VIDEO_WIDTH - TEXT_MARGIN - width
+    ? contentWidth - margin - width
     : align === "center"
-      ? (VIDEO_WIDTH - width) / 2
-      : TEXT_MARGIN;
+      ? (contentWidth - width) / 2
+      : margin;
 
   // Used only when the font cannot be measured; ffmpeg centres on its own text width,
   // which is why the highlight cannot be positioned to match it exactly.
-  const fallbackX = align === "right" ? `w-text_w-${TEXT_MARGIN}` : align === "center" ? "(w-text_w)/2" : `${TEXT_MARGIN}`;
+  const fallbackX = align === "right" ? `${contentWidth}-text_w-${margin}` : align === "center" ? `(${contentWidth}-text_w)/2` : `${margin}`;
 
   const chunks = [];
   for (let index = 0; index < words.length; index += groupSize) {
@@ -274,26 +396,53 @@ const createCaptionFilter = (words, style, captionStyle = {}, fontPath = "") => 
 
     // Every word is positioned here rather than by ffmpeg's own line layout, so the
     // highlight lands on exactly the pixels the base word occupies.
-    const groupWidth = wordWidths.reduce((sum, width) => sum + width, 0) + spaceWidth * (groupWords.length - 1);
-    const lineStart = startOfLine(groupWidth);
-    let cursor = lineStart;
-
+    const maxLineWidth = contentWidth - margin * 2;
+    const lines = [];
+    let line = [];
+    let lineWidth = 0;
     groupWords.forEach((word, wordIndex) => {
-      const wordX = cursor.toFixed(2);
-      cursor += wordWidths[wordIndex] + spaceWidth;
-      const text = escapeText(word);
-      // expansion=none: drawtext otherwise treats %{...} as a directive, so a caption
-      // containing a percent sign renders wrong or vanishes.
-      const common = `${fontSource}:text='${text}':expansion=none:fontsize=${fontSize}:borderw=${strokeWidth}:bordercolor=${strokeColor}:x=${wordX}:y=${baselineY}`;
-
-      chunks.push(`drawtext=${common}:fontcolor=${textColor}:enable=between(t\\,${start}\\,${end})`);
-
-      if (style !== "summary") {
-        const wordStart = Number(group[wordIndex].start.toFixed(3));
-        const wordEnd = Number(group[wordIndex].end.toFixed(3));
-        chunks.push(`drawtext=${common}:fontcolor=${highlightColor}:enable=between(t\\,${wordStart}\\,${wordEnd})`);
+      const nextWidth = line.length ? lineWidth + spaceWidth + wordWidths[wordIndex] : wordWidths[wordIndex];
+      if (line.length && nextWidth > maxLineWidth) {
+        lines.push({ words: line, width: lineWidth });
+        line = [];
+        lineWidth = 0;
       }
+      line.push({ word, wordIndex });
+      lineWidth = line.length === 1 ? wordWidths[wordIndex] : lineWidth + spaceWidth + wordWidths[wordIndex];
     });
+    if (line.length) lines.push({ words: line, width: lineWidth });
+
+    const lineHeight = Math.round(Number(captionStyle.lineHeight) || fontSize * 1.24);
+    lines.forEach((captionLine, lineIndex) => {
+      const lineStart = startOfLine(captionLine.width);
+      let cursor = lineStart;
+      const lineY = captionStyle.position === "top" || captionStyle.position === "bottom" || layout === "bottom-third"
+        ? `${lineTop}+${lineIndex * lineHeight}+${ascentPx}-ascent`
+        : `(h-${glyphHeightPx * lines.length + lineHeight * (lines.length - 1)})/2+${lineIndex * lineHeight}+${ascentPx}-ascent`;
+
+      captionLine.words.forEach(({ word, wordIndex }) => {
+        const wordX = cursor.toFixed(2);
+        cursor += wordWidths[wordIndex] + spaceWidth;
+        const text = escapeText(word);
+        // expansion=none: drawtext otherwise treats %{...} as a directive, so a caption
+        // containing a percent sign renders wrong or vanishes.
+        const common = `${fontSource}:text='${text}':expansion=none:fontsize=${fontSize}:borderw=${strokeWidth}:bordercolor=${strokeColor}:x=${wordX}:y=${lineY}`;
+
+        chunks.push(`drawtext=${common}:fontcolor=${textColor}:enable=between(t\\,${start}\\,${end})`);
+
+        if (style !== "summary") {
+          const wordStart = Number(group[wordIndex].start.toFixed(3));
+          const wordEnd = Number(group[wordIndex].end.toFixed(3));
+          chunks.push(`drawtext=${common}:fontcolor=${highlightColor}:enable=between(t\\,${wordStart}\\,${wordEnd})`);
+        }
+      });
+    });
+  }
+  if (watermark?.enabled && watermark.text?.trim()) {
+    const watermarkSize = Math.round(({ small: 24, medium: 32, large: 44 }[watermark.scale] || 32) * videoWidth / 1080);
+    const opacity = Math.max(0.05, Math.min(1, Number(watermark.opacity) || 0.72)).toFixed(2);
+    const watermarkText = escapeText(watermark.text.trim());
+    chunks.push(`drawtext=${fontSource}:text='${watermarkText}':expansion=none:fontcolor=white@${opacity}:fontsize=${watermarkSize}:x=w-text_w-${margin}:y=h-text_h-${margin}:enable=gte(t\\,0)`);
   }
   return chunks.join(",");
 };
@@ -368,6 +517,9 @@ const providerRequest = async ({ provider, model, apiKey, material, inputType, m
 };
 
 const server = createHttpServer((request, response) => {
+  response.setHeader("Access-Control-Allow-Origin", process.env.CORS_ORIGIN || "*");
+  response.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   if (request.method === "OPTIONS") {
     response.writeHead(204);
     response.end();
@@ -396,6 +548,38 @@ const server = createHttpServer((request, response) => {
       })));
       sendJson(response, 200, clips);
     }).catch(() => sendJson(response, 500, { error: "Could not read clips" }));
+    return;
+  }
+
+  const listAudio = (directory, prefix) => fs.readdir(directory, { withFileTypes: true }).then(async (entries) => {
+    const files = entries.filter((entry) => entry.isFile() && AUDIO_EXTENSIONS.test(entry.name));
+    return Promise.all(files.map(async (entry) => ({
+      name: entry.name,
+      url: `/${prefix}/${encodeURIComponent(entry.name)}`,
+      duration: await probeDuration(join(directory, entry.name))
+    })));
+  });
+
+  if (request.method === "GET" && request.url === "/api/music") {
+    listAudio(musicDir, "music").then((tracks) => sendJson(response, 200, tracks)).catch(() => sendJson(response, 500, { error: "Could not read music library" }));
+    return;
+  }
+
+  if (request.method === "GET" && request.url === "/api/voiceovers") {
+    listAudio(voiceoversDir, "voiceovers").then((tracks) => sendJson(response, 200, tracks)).catch(() => sendJson(response, 500, { error: "Could not read voiceover library" }));
+    return;
+  }
+
+  if (request.method === "GET" && (request.url.startsWith("/music/") || request.url.startsWith("/voiceovers/"))) {
+    const isMusic = request.url.startsWith("/music/");
+    const prefix = isMusic ? "/music/" : "/voiceovers/";
+    const directory = isMusic ? musicDir : voiceoversDir;
+    const filename = safeName(decodeURIComponent(request.url.slice(prefix.length)));
+    const filepath = join(directory, filename);
+    fs.stat(filepath).then((stat) => {
+      response.writeHead(200, { "Content-Length": stat.size, "Content-Type": audioContentType(filepath), "Accept-Ranges": "bytes" });
+      createReadStream(filepath).pipe(response);
+    }).catch(() => sendJson(response, 404, { error: "Audio file not found" }));
     return;
   }
 
@@ -429,17 +613,93 @@ const server = createHttpServer((request, response) => {
     }
     const filename = `${Date.now()}-${name}`;
     const target = join(clipsDir, filename);
+    if (Number(request.headers["content-length"] || 0) > MAX_CLIP_UPLOAD_BYTES) {
+      sendJson(response, 413, { error: "Uploaded clip is too large." });
+      return;
+    }
     const stream = createWriteStream(target);
+    let received = 0;
+    let rejected = false;
+    request.on("data", (chunk) => {
+      received += chunk.length;
+      if (received > MAX_CLIP_UPLOAD_BYTES && !rejected) {
+        rejected = true;
+        request.unpipe(stream);
+        stream.destroy();
+        request.resume();
+        fs.rm(target, { force: true }).catch(() => undefined);
+        sendJson(response, 413, { error: "Uploaded clip is too large." });
+      }
+    });
     request.pipe(stream);
     stream.on("finish", async () => {
+      if (rejected) return;
       const duration = await probeDuration(target);
       sendJson(response, 200, { name: filename, url: `/clips/${encodeURIComponent(filename)}`, duration });
     });
     stream.on("error", async () => {
+      if (rejected) return;
       await fs.rm(target, { force: true });
       sendJson(response, 500, { error: "Could not save the uploaded clip." });
     });
     request.on("error", () => stream.destroy());
+    return;
+  }
+
+  const uploadAudio = (request, response, directory, prefix, label) => {
+    const requested = new URL(request.url, "http://127.0.0.1").searchParams.get("name") || `${label}.mp3`;
+    const name = safeName(decodeURIComponent(requested));
+    if (!AUDIO_EXTENSIONS.test(name)) {
+      sendJson(response, 400, { error: "Unsupported audio file type. Use MP3, WAV, M4A, AAC, OGG, or FLAC." });
+      return;
+    }
+    const filename = `${Date.now()}-${name}`;
+    const target = join(directory, filename);
+    if (Number(request.headers["content-length"] || 0) > MAX_AUDIO_UPLOAD_BYTES) {
+      sendJson(response, 413, { error: `Uploaded ${label} is too large.` });
+      return;
+    }
+    const stream = createWriteStream(target);
+    let received = 0;
+    let rejected = false;
+    request.on("data", (chunk) => {
+      received += chunk.length;
+      if (received > MAX_AUDIO_UPLOAD_BYTES && !rejected) {
+        rejected = true;
+        request.unpipe(stream);
+        stream.destroy();
+        request.resume();
+        fs.rm(target, { force: true }).catch(() => undefined);
+        sendJson(response, 413, { error: `Uploaded ${label} is too large.` });
+      }
+    });
+    request.pipe(stream);
+    stream.on("finish", async () => {
+      if (rejected) return;
+      try {
+        const media = await probeMedia(target);
+        if (!media.duration) throw new Error("The uploaded audio could not be read.");
+        sendJson(response, 200, { name: filename, url: `/${prefix}/${encodeURIComponent(filename)}`, duration: media.duration });
+      } catch (error) {
+        await fs.rm(target, { force: true });
+        sendJson(response, 400, { error: error.message || `Could not save the ${label}.` });
+      }
+    });
+    stream.on("error", async () => {
+      if (rejected) return;
+      await fs.rm(target, { force: true });
+      sendJson(response, 500, { error: `Could not save the ${label}.` });
+    });
+    request.on("error", () => stream.destroy());
+  };
+
+  if (request.method === "POST" && request.url.startsWith("/api/music/upload")) {
+    uploadAudio(request, response, musicDir, "music", "music track");
+    return;
+  }
+
+  if (request.method === "POST" && request.url.startsWith("/api/voiceovers/upload")) {
+    uploadAudio(request, response, voiceoversDir, "voiceovers", "voiceover");
     return;
   }
 
@@ -481,9 +741,9 @@ const server = createHttpServer((request, response) => {
       } catch (error) {
         sendJson(response, 502, { error: error.message });
       }
-    }).catch(() => {
-      if (!response.writableEnded && !renderAbort.signal.aborted) {
-        sendJson(response, 400, { error: "Invalid JSON request." });
+    }).catch((error) => {
+      if (!response.writableEnded) {
+        sendJson(response, error.statusCode || 400, { error: error.statusCode === 413 ? error.message : "Invalid JSON request." });
       }
     });
     return;
@@ -586,43 +846,93 @@ const server = createHttpServer((request, response) => {
     request.on("aborted", abortRender);
     response.on("close", abortRender);
 
-    readJson(request).then(async ({ backgroundBase64, backgroundUrl, audioBase64, words, textStyle, captionStyle, fontBase64, fontFileName, clipOffset = 0, randomStart = false, backgroundVolume = 0 }) => {
-      if ((!backgroundBase64 && !backgroundUrl?.startsWith("/clips/")) || !audioBase64 || !words?.length) {
-        sendJson(response, 400, { error: "Background clip, audio, and word timings are required." });
+    readJson(request).then(async ({ backgroundBase64, backgroundUrl, audioBase64, words = [], textStyle, captionStyle, fontBase64, fontFileName, clipOffset = 0, randomStart = false, backgroundVolume = 0, musicUrl = "", musicBase64 = "", musicVolume = 0.18, ducking = true, narrationVolume = 1, syncGameplay = false, sceneTimeline = [], renderProfile, layout, watermark }) => {
+      if ((!backgroundBase64 && !backgroundUrl?.startsWith("/clips/")) || !audioBase64) {
+        sendJson(response, 400, { error: "Background clip and narration audio are required." });
         return;
       }
+      const renderOptions = normalizeRenderOptions({ renderProfile, layout, watermark });
       const id = randomUUID();
       const backgroundName = backgroundUrl?.startsWith("/clips/") ? safeName(decodeURIComponent(backgroundUrl.slice("/clips/".length))) : "";
       const sourceBackgroundPath = backgroundName ? join(clipsDir, backgroundName) : "";
       const backgroundPath = join(outputsDir, `${id}-background${extname(sourceBackgroundPath || ".mp4") || ".mp4"}`);
       const audioPath = join(outputsDir, `${id}-voice.mp3`);
+      const musicName = musicUrl?.startsWith("/music/") ? safeName(decodeURIComponent(musicUrl.slice("/music/".length))) : "";
+      const sourceMusicPath = musicName ? join(musicDir, musicName) : "";
+      const musicPath = join(outputsDir, `${id}-music${extname(sourceMusicPath || ".mp3") || ".mp3"}`);
       const fontPath = fontBase64 ? join(outputsDir, `${id}-${safeName(fontFileName || "custom-font.ttf")}`) : "";
       const outputPath = join(outputsDir, `${id}.mp4`);
       try {
         if (backgroundBase64) await fs.writeFile(backgroundPath, Buffer.from(backgroundBase64, "base64"));
         else await fs.copyFile(sourceBackgroundPath, backgroundPath);
         await fs.writeFile(audioPath, Buffer.from(audioBase64, "base64"));
+        if (musicBase64) await fs.writeFile(musicPath, Buffer.from(musicBase64, "base64"));
+        else if (sourceMusicPath) await fs.copyFile(sourceMusicPath, musicPath);
         if (fontPath) await fs.writeFile(fontPath, Buffer.from(fontBase64, "base64"));
 
-        const narrationSeconds = Number(words.at(-1)?.end) || 0;
+        const narrationMedia = await probeMedia(audioPath);
+        const narrationSeconds = Number(words.at(-1)?.end) || narrationMedia.duration || 1;
         const background = await probeMedia(backgroundPath);
         const offset = randomStart
           ? randomStartOffset(background.duration, narrationSeconds)
           : Math.max(0, Number(clipOffset) || 0);
+        const profile = RENDER_PROFILES[renderOptions.renderProfile];
+        const outputWidth = profile.width;
+        const outputHeight = profile.height;
+        const captionFilter = words.length ? createCaptionFilter(words, textStyle, captionStyle, fontPath, renderOptions.renderProfile, renderOptions.layout, renderOptions.watermark) : "";
+        const filterParts = [];
+        const normalizedTimeline = syncGameplay ? normalizeSceneTimeline(sceneTimeline, narrationSeconds) : [];
+        const gameplayInput = buildSynchronizedGameplay(filterParts, normalizedTimeline, background.duration);
+        if (renderOptions.layout === "bottom-third") {
+          const gameplayHeight = Math.round(outputHeight * 0.35);
+          const gameplayY = outputHeight - gameplayHeight;
+          filterParts.push(`${gameplayInput}scale=${outputWidth}:${gameplayHeight}:force_original_aspect_ratio=increase,crop=${outputWidth}:${gameplayHeight}[game]`);
+          filterParts.push(`color=c=#141821:s=${outputWidth}x${outputHeight}:d=${Math.max(1, narrationSeconds)}[base]`);
+          filterParts.push(`[base][game]overlay=0:${gameplayY}[layout]`);
+        } else if (renderOptions.layout === "split") {
+          const contentWidth = Math.round(outputWidth * 0.52);
+          const gameplayWidth = outputWidth - contentWidth;
+          filterParts.push(`${gameplayInput}scale=${gameplayWidth}:${outputHeight}:force_original_aspect_ratio=increase,crop=${gameplayWidth}:${outputHeight}[game]`);
+          filterParts.push(`color=c=#fff8fb:s=${outputWidth}x${outputHeight}:d=${Math.max(1, narrationSeconds)}[base]`);
+          filterParts.push(`[base][game]overlay=${contentWidth}:0[layout]`);
+        } else {
+          filterParts.push(`${gameplayInput}scale=${outputWidth}:${outputHeight}:force_original_aspect_ratio=increase,crop=${outputWidth}:${outputHeight}[layout]`);
+        }
+        if (captionFilter) filterParts.push(`[layout]${captionFilter}[vout]`);
         const gameplayVolume = background.hasAudio ? Math.max(0, Math.min(1, Number(backgroundVolume) || 0)) : 0;
-        const audioArgs = gameplayVolume > 0
-          ? ["-filter_complex", `[0:a]volume=${gameplayVolume.toFixed(2)}[bg];[1:a][bg]amix=inputs=2:duration=first:dropout_transition=0[aout]`, "-map", "[aout]"]
-          : ["-map", "1:a:0"];
+        const normalizedNarrationVolume = Math.max(0, Math.min(1.5, Number(narrationVolume) || 1));
+        const normalizedMusicVolume = Math.max(0, Math.min(1, Number(musicVolume) || 0));
+        const hasMusic = Boolean(musicBase64 || sourceMusicPath);
+        const shouldDuck = hasMusic && normalizedMusicVolume > 0 && Boolean(ducking);
+        const audioFilters = [shouldDuck
+          ? `[1:a]volume=${normalizedNarrationVolume.toFixed(2)},asplit=2[voice][voice_sc]`
+          : `[1:a]volume=${normalizedNarrationVolume.toFixed(2)}[voice]`];
+        let audioMap = "[voice]";
+        if (hasMusic && normalizedMusicVolume > 0) {
+          audioFilters.push(`[2:a]volume=${normalizedMusicVolume.toFixed(2)}[music]`);
+          if (shouldDuck) audioFilters.push(`[music][voice_sc]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=300:makeup=1[ducked]`);
+          const musicLabel = shouldDuck ? "[ducked]" : "[music]";
+          audioFilters.push(`[voice]${musicLabel}amix=inputs=2:duration=first:dropout_transition=0[mix]`);
+          audioMap = "[mix]";
+        }
+        if (gameplayVolume > 0) {
+          audioFilters.push(`[0:a]volume=${gameplayVolume.toFixed(2)}[game]`);
+          audioFilters.push(`${audioMap}[game]amix=inputs=2:duration=first:dropout_transition=0[final]`);
+          audioMap = "[final]";
+        }
 
-        await runProcess(ffmpegPath, [
+        const ffmpegArgs = [
           "-y",
           "-stream_loop", "-1",
           "-ss", String(offset),
           "-i", backgroundPath,
           "-i", audioPath,
-          "-map", "0:v:0",
-          ...audioArgs,
-          "-vf", `scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,${createCaptionFilter(words, textStyle, captionStyle, fontPath)}`,
+        ];
+        if (hasMusic) ffmpegArgs.push("-stream_loop", "-1", "-i", musicPath);
+        ffmpegArgs.push(
+          "-filter_complex", [...filterParts, ...audioFilters].join(";"),
+          "-map", captionFilter ? "[vout]" : "[layout]",
+          "-map", audioMap,
           "-t", String(Math.max(1, narrationSeconds)),
           "-r", "30",
           "-c:v", "libx264",
@@ -633,7 +943,8 @@ const server = createHttpServer((request, response) => {
           "-b:a", "192k",
           "-movflags", "+faststart",
           outputPath
-        ], { signal: renderAbort.signal });
+        );
+        await runProcess(ffmpegPath, ffmpegArgs, { signal: renderAbort.signal });
         if (!response.writableEnded) sendJson(response, 200, { url: `/outputs/${id}.mp4`, clipOffset: offset });
       } catch (error) {
         if (renderAbort.signal.aborted) {
@@ -642,7 +953,7 @@ const server = createHttpServer((request, response) => {
         }
         if (!response.writableEnded) sendJson(response, 502, { error: error.message });
       } finally {
-        await Promise.all([backgroundPath, audioPath, fontPath].filter(Boolean).map((filepath) => fs.rm(filepath, { force: true })));
+        await Promise.all([backgroundPath, audioPath, musicBase64 || sourceMusicPath ? musicPath : "", fontPath].filter(Boolean).map((filepath) => fs.rm(filepath, { force: true })));
       }
     }).catch(() => sendJson(response, 400, { error: "Invalid JSON request." }));
     return;

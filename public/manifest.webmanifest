@@ -1,0 +1,10 @@
+{
+  "name": "EasyBrainrot Reader",
+  "short_name": "EasyBrainrot",
+  "description": "Turn study notes into focused, shareable brainrot videos.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fbfaff",
+  "theme_color": "#8d24ef",
+  "icons": [{ "src": "/easybrainrot/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }]
+}

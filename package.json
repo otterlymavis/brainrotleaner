@@ -7,6 +7,11 @@
     "dev": "vite --host 127.0.0.1",
     "api": "node server.mjs",
     "build": "vite build",
+    "mobile:sync": "npm run build && npx cap sync",
+    "mobile:ios": "npm run mobile:sync && npx cap open ios",
+    "mobile:android": "npm run mobile:sync && npx cap open android",
+    "test:render": "node tools/smoke-render.mjs",
+    "test:platforms": "node tools/verify-platforms.mjs",
     "start": "node server.mjs",
     "preview": "vite preview --host 127.0.0.1"
   },
@@ -15,14 +20,20 @@
   },
   "dependencies": {
     "@andresaya/edge-tts": "^1.8.0",
+    "@capacitor/android": "^7.4.3",
+    "@capacitor/core": "^7.4.3",
+    "@capacitor/ios": "^7.4.3",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@vitejs/plugin-react": "^5.0.0",
     "lucide-react": "^0.468.0",
     "opentype.js": "^2.0.0",
-    "pdfjs-dist": "^5.4.54",
+    "pdfjs-dist": "^6.3.289",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "vite": "^7.0.6",
     "yt-dlp-wrap": "^2.3.12"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.4.3"
   }
 }

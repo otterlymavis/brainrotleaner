@@ -42,6 +42,40 @@ In a second terminal, start the local provider bridge:
 npm run api
 ```
 
+## iOS, Android, and installable web app
+
+The frontend is also packaged with Capacitor so the same React experience can
+run as native iOS and Android apps. The web build includes a manifest and a
+service-worker shell, so it can also be installed as a PWA from a supported
+browser.
+
+For a native build, deploy the Node/FFmpeg server first, then set
+`VITE_API_BASE_URL` to its HTTPS URL before syncing the native projects:
+
+```bash
+VITE_API_BASE_URL=https://reader-api.example.com npm run mobile:sync
+npm run mobile:android
+npm run mobile:ios
+```
+
+`mobile:android` opens Android Studio and `mobile:ios` opens Xcode. Android
+requires the Android SDK and JDK 21 (required by Capacitor 7); iOS requires
+macOS, Xcode, and CocoaPods. The native projects are generated in `android/`
+and `ios/` and should be synced again after frontend changes.
+
+Every push and pull request also runs `.github/workflows/platform-builds.yml`.
+It validates the web/PWA build, uploads an Android release bundle, and
+compiles an unsigned iOS Simulator build on macOS.
+The iOS job stores the compiled `App.app` as a downloadable CI artifact.
+The local `npm run test:platforms` gate checks that both native targets and
+their synchronized web bundles are present.
+
+For a Google Play release, provide `ANDROID_KEYSTORE_FILE`,
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`
+as protected CI secrets/environment variables. Without them, local and CI
+builds remain useful for validation but are not configured with your
+production upload key.
+
 ## API Setup
 
 No keys are needed to make a video. Paste or upload your material, pick a
@@ -134,7 +168,7 @@ Notes for the hosted build:
 - Oracle can reclaim Always Free instances that sit idle. Keep the machine doing
   something occasionally if you want to keep it.
 
-## Next Build Targets
+## Completed Build Targets
 
-- Add social publishing adapters.
-- Add user reading profiles for speed, caption density, and stimulation level.
+- Added social publishing adapters for TikTok, YouTube, Instagram, native device sharing, and copy-link handoff after rendering. These adapters open the platform upload flow; the downloaded MP4 remains under the user's control.
+- Added persistent user reading profiles for speed, caption density, and stimulation level. Profiles are stored locally in the browser and applied to new renders.
